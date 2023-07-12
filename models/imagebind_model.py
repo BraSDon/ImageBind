@@ -72,6 +72,7 @@ class ImageBindModel(nn.Module):
     ):
         super().__init__()
 
+        # preprocess the modalities
         self.modality_preprocessors = self._create_modality_preprocessors(
             video_frames,
             vision_embed_dim,
@@ -89,6 +90,7 @@ class ImageBindModel(nn.Module):
             imu_embed_dim,
         )
 
+        # trunks are simple transformers
         self.modality_trunks = self._create_modality_trunks(
             vision_embed_dim,
             vision_num_blocks,
@@ -114,6 +116,8 @@ class ImageBindModel(nn.Module):
             imu_drop_path,
         )
 
+        # heads that map the respective modality embed_dim
+        # to the shared out_embed_dim
         self.modality_heads = self._create_modality_heads(
             out_embed_dim,
             vision_embed_dim,
@@ -124,6 +128,7 @@ class ImageBindModel(nn.Module):
             imu_embed_dim,
         )
 
+        # normalize along last dimension and perform (learnable) logit scaling
         self.modality_postprocessors = self._create_modality_postprocessors(
             out_embed_dim
         )
@@ -145,20 +150,25 @@ class ImageBindModel(nn.Module):
         thermal_kernel_size=16,
         imu_embed_dim=512,
     ):
+        # rgbt = rgb + thermal
+        # stem = early layers of the model (typically for pre-processing)
+        # Transform image into trivial video, TODO reason: align with other videos(?)
+        # 3D conv to capture spatiotemporal patterns and dependencies. However,
+        # not really in this case as there is no temporal information.
         rgbt_stem = PatchEmbedGeneric(
             proj_stem=[
-                PadIm2Video(pad_type="repeat", ntimes=2),
+                PadIm2Video(pad_type="repeat", ntimes=2),  # repeat frames 2 times
                 nn.Conv3d(
                     in_channels=3,
                     kernel_size=kernel_size,
                     out_channels=vision_embed_dim,
-                    stride=kernel_size,
-                    bias=False,
+                    stride=kernel_size,  # Stride = kernel size to avoid overlap
+                    bias=False,  # TODO: Why no bias?
                 ),
             ]
         )
         rgbt_preprocessor = RGBDTPreprocessor(
-            img_size=[3, video_frames, 224, 224],
+            img_size=[3, video_frames, 224, 224],  # TODO:
             num_cls_tokens=1,
             pos_embed_fn=partial(SpatioTemporalPosEmbeddingHelper, learnable=True),
             rgbt_stem=rgbt_stem,

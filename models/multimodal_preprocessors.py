@@ -609,7 +609,7 @@ class IMUPreprocessor(VerboseNNModule):
         kernel_size: int,
         imu_stem: PatchEmbedGeneric,
         embed_dim: int,
-        img_size: Tuple = (6, 2000),
+        img_size: Tuple = (6, 2000),  # 6 measurements, 2000 time steps
         num_cls_tokens: int = 1,
         pos_embed_fn: Optional[Callable] = None,
         init_param_style: str = "openclip",
@@ -622,7 +622,7 @@ class IMUPreprocessor(VerboseNNModule):
         self.kernel_size = kernel_size
         self.pos_embed = nn.Parameter(
             torch.empty(1, (img_size[1] // kernel_size) + num_cls_tokens, embed_dim)
-        )
+        )  # assuming a step size of kernel_size, and no padding, pos_embed is (1, input_dim, embed_dim)
 
         if self.num_cls_tokens > 0:
             self.cls_token = nn.Parameter(
@@ -663,6 +663,11 @@ class IMUPreprocessor(VerboseNNModule):
         return tokens
 
     def forward(self, imu):
+        # imu is of shape B x 6 x 2000
+        # unfold results in B x 6 x 2000 // kernel_size x kernel_size
+        # permute results in B x 2000 // kernel_size x 6 x kernel_size
+        # reshape results in B x 2000 // kernel_size x (6 * kernel_size)
+        # reshape result can be interpreted as: B x num_patches x measurements_per_patch
         # Patchify
         imu = imu.unfold(
             -1,

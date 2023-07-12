@@ -132,6 +132,7 @@ def load_and_transform_audio_data(
 
     for audio_path in audio_paths:
         waveform, sr = torchaudio.load(audio_path)
+        # if original sample rate is not the same as the target sample rate, resample
         if sample_rate != sr:
             waveform = torchaudio.functional.resample(
                 waveform, orig_freq=sr, new_freq=sample_rate
@@ -140,13 +141,13 @@ def load_and_transform_audio_data(
             clip_sampler, waveform.size(1) / sample_rate
         )
         all_clips = []
-        for clip_timepoints in all_clips_timepoints:
-            waveform_clip = waveform[
-                :,
-                int(clip_timepoints[0] * sample_rate) : int(
-                    clip_timepoints[1] * sample_rate
-                ),
-            ]
+        for (start, end) in all_clips_timepoints:
+            start_index, end_index = int(start * sample_rate), int(end * sample_rate)
+            waveform_clip = waveform[:, start_index : end_index]
+            # mel-spectogram typically is a 2D array. One dimension is the time,
+            # and the other is the frequency. The values are the intensity of the
+            # frequency at that time.
+            # Here: shape is (1, num_mel_bins, num_frames), like a 1 channel image.
             waveform_melspec = waveform2melspec(
                 waveform_clip, sample_rate, num_mel_bins, target_length
             )
@@ -155,10 +156,10 @@ def load_and_transform_audio_data(
         normalize = transforms.Normalize(mean=mean, std=std)
         all_clips = [normalize(ac).to(device) for ac in all_clips]
 
-        all_clips = torch.stack(all_clips, dim=0)
+        all_clips = torch.stack(all_clips, dim=0)  # (num_clips, 1, num_mel_bins, num_frames)
         audio_outputs.append(all_clips)
 
-    return torch.stack(audio_outputs, dim=0)
+    return torch.stack(audio_outputs, dim=0)  # (len(audio_paths), num_clips, 1, num_mel_bins, num_frames)
 
 
 def crop_boxes(boxes, x_offset, y_offset):
@@ -303,9 +304,13 @@ def load_and_transform_video_data(
         ]
     )
 
+    # Create sampler, that creates clips_per_video clips of clip_duration seconds
+    # by uniformly sampling. e.g. first clip is from 0-2s, second from 2-4s, etc.
     clip_sampler = ConstantClipsPerVideoSampler(
         clip_duration=clip_duration, clips_per_video=clips_per_video
     )
+
+    # Create frame sampler. For each second in clip, sample 1 frame.
     frame_sampler = pv_transforms.UniformTemporalSubsample(num_samples=clip_duration)
 
     for video_path in video_paths:
@@ -313,17 +318,20 @@ def load_and_transform_video_data(
             video_path,
             decoder="decord",
             decode_audio=False,
-            **{"sample_rate": sample_rate},
+            # **{"sample_rate": sample_rate}, throws error if left in
         )
 
+        # List of clip timepoints (start,end) for the current video
         all_clips_timepoints = get_clip_timepoints(clip_sampler, video.duration)
 
         all_video = []
-        for clip_timepoints in all_clips_timepoints:
+        for (start, end) in all_clips_timepoints:
             # Read the clip, get frames
-            clip = video.get_clip(clip_timepoints[0], clip_timepoints[1])
+            clip = video.get_clip(start, end)
             if clip is None:
                 raise ValueError("No clip found")
+            # Sample frames from the video part of the clip. Frames are (C, 1, H, W)
+            # therefore video_clip is (C, num_samples, H, W).
             video_clip = frame_sampler(clip["video"])
             video_clip = video_clip / 255.0  # since this is float, need 0-1
 
@@ -332,7 +340,7 @@ def load_and_transform_video_data(
         all_video = [video_transform(clip) for clip in all_video]
         all_video = SpatialCrop(224, num_crops=3)(all_video)
 
-        all_video = torch.stack(all_video, dim=0)
+        all_video = torch.stack(all_video, dim=0)  # (clips * 3, C, num_samples, 224, 224)
         video_outputs.append(all_video)
 
     return torch.stack(video_outputs, dim=0).to(device)
